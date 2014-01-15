@@ -16,6 +16,7 @@
 #include <time.h>
 #include "express.h"
 
+typedef struct token_value value_t;
 // token类型
 enum {
     OP_BEG = 1,     // (
@@ -82,7 +83,7 @@ struct express {
     struct token *rpn;          // 运算符逆波兰表示
     size_t size;                // rpn的长度
     char *strbuff;              // 保存token中的id和str
-    struct token_value *stack;  // 计算时的参数栈
+    value_t *stack;  // 计算时的参数栈
     struct bufflist *list;      // 保存计算时分配的内存，计算结束是释放
 };
 
@@ -93,15 +94,17 @@ struct token_buff {
 };
 
 #define TYPE(n) (arg[n].type)
-#define NUM_VAL(_NUM) (struct token_value) { .type = TV_NUM, .num = (_NUM) }
-#define STR_VAL(_STR) (struct token_value) { .type = TV_STR, .str = (_STR) }
+#define NUM_VAL(_NUM) (value_t) { .type = TV_NUM, .num = (_NUM) }
+#define STR_VAL(_STR) (value_t) { .type = TV_STR, .str = (_STR) }
 #define NUM(n) (TYPE(n)==TV_NUM?arg[n].num:(arg[n].str ? atof(arg[n].str):0))
 #define STR(n) (TYPE(n)==TV_STR?arg[n].str:"")
 #define LONG(n) (TYPE(n)==TV_NUM?(long)arg[n].num:(arg[n].str?atol(arg[n].str):0))
 #define COMP(i,j,ST,OP) \
     ((TYPE(i)==TV_NUM||TYPE(j)==TV_NUM)?(ST(i) OP ST(j)):(strcmp(STR(i), STR(j)) OP 0))
 
-typedef struct token_value (*token_fn)(struct token_value *arg, size_t narg, struct express *expr);
+typedef value_t (*token_fn)(value_t *arg, size_t narg, struct express *expr);
+
+// 函数结构定义
 struct function
 {
     char     *name;
@@ -120,19 +123,22 @@ static inline char *express_alloc(struct express *expr, size_t size)
     return n->buff;
 }
 
-static struct token_value fn_strcmp(struct token_value *arg, size_t argc, struct express *expr)
+// strcmp封装
+static value_t fn_strcmp(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 2);
     return NUM_VAL(strcmp(STR(0), STR(1)));
 }
 
-static struct token_value fn_strlen(struct token_value *arg, size_t argc, struct express *expr)
+// strlen封装
+static value_t fn_strlen(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 1);
     return NUM_VAL(strlen(STR(0)));
 }
 
-static struct token_value fn_in(struct token_value *arg, size_t argc, struct express *expr)
+// 判断第一个参数是否和剩余参数中的一个相等
+static value_t fn_in(value_t *arg, size_t argc, struct express *expr)
 {
     int rc = 0;
     size_t i = 0;
@@ -144,13 +150,15 @@ static struct token_value fn_in(struct token_value *arg, size_t argc, struct exp
     return NUM_VAL(rc);
 }
 
-static struct token_value fn_strstr(struct token_value *arg, size_t argc, struct express *expr)
+// strstr封装
+static value_t fn_strstr(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 2);
     return STR_VAL(strstr(STR(0), STR(1)));
 }
 
-static struct token_value fn_substr(struct token_value *arg, size_t argc, struct express *expr)
+// 返回字串
+static value_t fn_substr(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 2 || argc == 3);
     ssize_t off, len, sublen;
@@ -175,24 +183,26 @@ static struct token_value fn_substr(struct token_value *arg, size_t argc, struct
     return STR_VAL(ptr);
 }
 
-static struct token_value fn_pow(struct token_value *arg, size_t argc, struct express *expr)
+// pow封装
+static value_t fn_pow(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 2);
     return NUM_VAL(pow(NUM(0), NUM(1)));
 }
 
-static struct token_value fn_case(struct token_value *arg, size_t argc, struct express *expr)
+// x ? y : z 计算
+static value_t fn_case(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 3);
     return (arg[0].type == TV_NUM ? !arg[0].num : !arg[0].str) ? arg[2] : arg[1];
 }
 
-static struct token_value fn_time(struct token_value *arg, size_t argc, struct express *expr)
+// time(NULL) 封装
+static value_t fn_time(value_t *arg, size_t argc, struct express *expr)
 {
     assert(argc == 0);
     return NUM_VAL(time(NULL));
 }
-
 
 enum {
     F_STRCMP = 1, // strcmp
@@ -589,7 +599,7 @@ struct express *express_create(const char *str)
     expr->size = rpn.size;
 
     // 分配计算时使用的栈
-    expr->stack = calloc(expr->size, sizeof(struct token_value));
+    expr->stack = calloc(expr->size, sizeof(value_t));
     assert(expr->stack);
 DONE:
     free(stack.tokens);
@@ -597,12 +607,12 @@ DONE:
     return expr;
 }
 
-static inline struct token_value FUNC_OPT(struct token *token, struct token_value *arg, struct express *expr)
+static inline value_t FUNC_OPT(struct token *token, value_t *arg, struct express *expr)
 {
     return token_funcs[token->subtype].func(arg, token->nparam, expr);
 }
 
-static inline struct token_value REGEX_OPT(struct token_value *arg)
+static inline value_t REGEX_OPT(value_t *arg)
 {
     int rc = 0;
     if (TYPE(0) == TV_STR && TYPE(0) == TV_STR) {
@@ -617,9 +627,9 @@ static inline struct token_value REGEX_OPT(struct token_value *arg)
     return NUM_VAL(rc);
 }
 
-static inline struct token_value FETCH_OPT(struct token *token, fetch_value_fn fetcher, void *ctx)
+static inline value_t FETCH_OPT(struct token *token, fetch_value_fn fetcher, void *ctx)
 {
-    struct token_value v = { .type = TV_NONE };
+    value_t v = { .type = TV_NONE };
     assert(token->ptr != NULL);
     if (fetcher) {
         v = fetcher(ctx, token->ptr);
@@ -631,17 +641,17 @@ static inline struct token_value FETCH_OPT(struct token *token, fetch_value_fn f
     return v;
 }
 
-static inline struct token_value NOT_OPT(struct token_value *arg)
+static inline value_t NOT_OPT(value_t *arg)
 {
     return NUM_VAL(arg[0].type == TV_NUM ? !arg[0].num : !arg[0].str);
 }
 
 #define NUM_OPT(ST, OP) NUM_VAL(ST(0) OP ST(1))
 #define STR_OPT(ST, OP) NUM_VAL(COMP(0, 1, ST, OP))
-struct token_value express_calculate(struct express *expr, fetch_value_fn fetcher, void *ctx)
+value_t express_calculate(struct express *expr, fetch_value_fn fetcher, void *ctx)
 {
     size_t i = 0, ss = 0;
-    struct token_value *stack = expr->stack, *arg = NULL;
+    value_t *stack = expr->stack, *arg = NULL;
     struct token *t = NULL;
     for (i = 0; i < expr->size; i++) {
         t = &expr->rpn[i];
@@ -673,7 +683,7 @@ struct token_value express_calculate(struct express *expr, fetch_value_fn fetche
         case OP_STR:        arg[0] = STR_VAL(t->ptr);  break;
         case OP_FUNC:       arg[0] = FUNC_OPT(t, arg, expr); break;
         case OP_ID:         arg[0] = FETCH_OPT(t, fetcher, ctx); break;
-        default: assert(0);
+        default: assert(0 && "unknow type");
         }
         ss = ss + 1 - t->nparam;
         assert(ss <= expr->size);
